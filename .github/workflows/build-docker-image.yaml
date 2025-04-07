@@ -1,4 +1,4 @@
-name: Build package
+name: Build docker image
 
 on:
   workflow_dispatch:
@@ -30,8 +30,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
-        tags: |
-          type=sha
+          tags: |
+            type=sha
 
       - name: Build and push Docker images
         id: push
