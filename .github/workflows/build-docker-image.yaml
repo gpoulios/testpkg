@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    name: Build
+    name: Checkout and build Docker image
     runs-on: ubuntu-latest
 
     permissions:
@@ -30,8 +30,6 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=sha
 
       - name: Build and push Docker images
         id: push
