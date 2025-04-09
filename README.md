@@ -27,17 +27,15 @@ It is implemented with `cosign`, which attaches a [Sigstore bundle](https://gith
 
 ### Inspection
 
-See also: https://search.sigstore.dev/?hash=sha256:05211794607b1d7f8d72c3cd75d6168f209680d8cbefe23d2d2cf1291b22140f
-
 ```bash
 $ export IMAGE=ghcr.io/gpoulios/testpkg
 
-$ oras discover $IMAGE:sha-5b07e3b
+$ oras discover ${IMAGE}:sha-5b07e3b
 ghcr.io/gpoulios/testpkg@sha256:9c24ac7eca13411bee8f335f96442c0b5ef8de65ff1f85da6f16fcb0c046bd78
 └── application/vnd.dev.sigstore.bundle.v0.3+json
     └── sha256:ac86426c102983ecd8036b7ae6d6ba9aabfdba1b1672cebcf481373863f0d08b
     
-$ oras manifest fetch --pretty $IMAGE@sha256:ac86426c102983ecd8036b7ae6d6ba9aabfdba1b1672cebcf481373863f0d08b
+$ oras manifest fetch --pretty "${IMAGE}@sha256:ac86426c102983ecd8036b7ae6d6ba9aabfdba1b1672cebcf481373863f0d08b"
 {
   "schemaVersion": 2,
   "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -69,13 +67,13 @@ $ oras manifest fetch --pretty $IMAGE@sha256:ac86426c102983ecd8036b7ae6d6ba9aabf
 
 ```bash
 # fetch config (should be empty according to docs)
-$ oras blob fetch --output - $IMAGE@sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
+$ oras blob fetch --output - "${IMAGE}@sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 {}
 ```
 
 ```bash
 # fetch sigstore bundle
-$ export BUNDLE_BLOB=$IMAGE@sha256:42f04b717a13e740a8a5b80798a4bbf256bb2334aab7a110d3d4c8b10f9ed395
+$ export BUNDLE_BLOB="${IMAGE}@sha256:42f04b717a13e740a8a5b80798a4bbf256bb2334aab7a110d3d4c8b10f9ed395"
 
 $ oras blob fetch --output - $BUNDLE_BLOB | jq .
 {
