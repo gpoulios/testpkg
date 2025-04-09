@@ -56,8 +56,13 @@ jobs:
         with:
           version: "1.3.1"
 
-      - name: Test notation setup
+      - name: Sign using notation
         run: |
           set -eu
-          echo "notation version:" >> $GITHUB_STEP_SUMMARY
-          notation version >> $GITHUB_STEP_SUMMARY
+
+          notation cert generate-test --default testkey.io
+
+          notation sign \
+            --signature-format=cose \
+            --force-referrers-tag=false \
+            ghcr.io/${{ github.repository }}@${{ steps.push.outputs.digest }}
