@@ -43,9 +43,21 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
 
-      - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v2
+      # disable for now to reduce clutter
+      # - name: Generate artifact attestation
+      #   uses: actions/attest-build-provenance@v2
+      #   with:
+      #     subject-name: ghcr.io/${{ github.repository }}
+      #     subject-digest: ${{ steps.push.outputs.digest }}
+      #     push-to-registry: true
+
+      - name: setup Notation CLI
+        uses: notaryproject/notation-action/setup@v1
         with:
-          subject-name: ghcr.io/${{ github.repository }}
-          subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
+          version: "1.3.1"
+
+      - name: Test notation setup
+        run: |
+          set -eu
+          echo "notation version:" >> $GITHUB_STEP_SUMMARY
+          notation version >> $GITHUB_STEP_SUMMARY
