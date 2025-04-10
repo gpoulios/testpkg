@@ -86,10 +86,38 @@ jobs:
         uses: sigstore/cosign-installer@v3.8.1
         with:
           cosign-release: 'v2.5.0'
-      - name: Check install!
+
+      - name: Sign using cosign
         run: |
-          cosign version
-          cosign help
+          set -eu
+
+          image=ghcr.io/${{ github.repository }}@${{ steps.push.outputs.digest }}
+
+          docker buildx imagetools inspect $image \
+            --format "{{json .Provenance.SLSA}}" > provenance.json
+
+          # generate a dummy key pair and a self-signed CA
+          openssl ecparam -out ecparam.pem -name prime256v1
+          openssl genpkey -paramfile ecparam.pem -out openssl.key
+          openssl req -rand /dev/random -new -days 365 -nodes -x509 \
+            -subj "/C=CC/ST=ST/L=l/O=o/CN=www.example.com" \
+            -key openssl.key -out cosign.cert
+
+          cosign import-key-pair --key openssl.key --output-key-prefix=cosign
+
+          cosign attest \
+            --tlog-upload=false --new-bundle-format=true \
+            --predicate provenance.json --type slsaprovenance02 \
+            --key cosign.key --certificate cosign.cert \
+            $image
+
+          # cosign sign -y --key cosign.key $image
+          # ..is pretty much equivalent except it doesn't upload as OCI artifact
+          #   but rather as a new tag attachment with ".sig" extension. The same
+          #   provenance data is included in the signed digest but need to be
+          #   fetched through the image index instead the referrers API.
+        env:
+          COSIGN_PASSWORD: insecure
 
 
 
