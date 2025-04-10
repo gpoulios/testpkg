@@ -896,3 +896,720 @@ $ openssl dgst -sigopt rsa_padding_mode:pss -verify pubkey.pem -sha256 -signatur
 Verified OK
 ```
 
+## Sigstore - Cosign
+
+### Usage
+
+```yaml
+      # Buildx is required for docker build attestations
+      # Otherwise we can still sign the image without it.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker images
+        id: push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+[...]
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.8.1
+        with:
+          cosign-release: 'v2.5.0'
+
+      - name: Sign using cosign
+        run: |
+          set -eu
+
+          image=ghcr.io/${{ github.repository }}@${{ steps.push.outputs.digest }}
+
+          docker buildx imagetools inspect $image \
+            --format "{{json .Provenance.SLSA}}" > provenance.json
+
+          cosign generate-key-pair
+
+          cosign attest \
+            --tlog-upload=false --new-bundle-format=true \
+            --predicate provenance.json --type slsaprovenance02 \
+            --key cosign.key \
+            $image
+
+          # cosign sign --key cosign.key $image
+          # ..is pretty much equivalent except it doesn't upload as OCI artifact
+          #   but rather as a new tag attachment with ".sig" extension. The same
+          #   provenance data is included in the signed digest but need to be
+          #   fetched through the image index instead the referrers API.
+        env:
+          COSIGN_PASSWORD: insecure
+```
+
+### Inspection - docker buildx attestation
+
+> This part should be identical to notation; put it here for completeness anyway.
+
+```bash
+$ export IMAGE=ghcr.io/gpoulios/testpkg
+$ export IMAGE_DGST=7fe4940f551b5c1c58e815b882024e2eed6b60d2380a3134aa3bcf603f2dc350
+
+$ oras manifest fetch --pretty ${IMAGE}@sha256:${IMAGE_DGST}
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.index.v1+json",
+  "manifests": [
+    {
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "digest": "sha256:898aa9e520bd7011f9c3b0063693d39915859b3a40dde035753651313a258891",
+      "size": 1960,
+      "platform": {
+        "architecture": "amd64",
+        "os": "linux"
+      }
+    },
+    {
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "digest": "sha256:5cc9b1839fe53fc7dad25d6f2d638abaf70729359bb48d0fb9dd0f7a78e9409f",
+      "size": 566,
+      "annotations": {
+        "vnd.docker.reference.digest": "sha256:898aa9e520bd7011f9c3b0063693d39915859b3a40dde035753651313a258891",
+        "vnd.docker.reference.type": "attestation-manifest"
+      },
+      "platform": {
+        "architecture": "unknown",
+        "os": "unknown"
+      }
+    }
+  ]
+}
+
+$ oras manifest fetch ${IMAGE}@sha256:${IMAGE_DGST} | sha256
+7fe4940f551b5c1c58e815b882024e2eed6b60d2380a3134aa3bcf603f2dc350
+# matches IMAGE_DGST, which is what gets signed by tools like notation
+```
+
+The 1st manifest is the image manifest (containing config, layers and annotations):
+
+```json
+$ oras manifest fetch --pretty ${IMAGE}@sha256:898aa9e520bd7011f9c3b0063693d39915859b3a40dde035753651313a258891
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "config": {
+    "mediaType": "application/vnd.oci.image.config.v1+json",
+    "digest": "sha256:3d9417294bde277f4acc3d02e0ddeb34a021cd813dae38f371d3fcd4f12aea6b",
+    "size": 6447
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:8663204ce13b2961da55026a2034abb9e5afaaccf6a9cfb44ad71406dcd07c7b",
+      "size": 2818370
+    },
+[...]
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:329af3d6b5976031130ffb3742b14bd26cdeb52608555fd5de46e77bd28d6eb1",
+      "size": 9092
+    }
+  ],
+  "annotations": {
+    "org.opencontainers.image.created": "2025-04-10T14:18:50.649Z",
+    "org.opencontainers.image.description": "",
+    "org.opencontainers.image.licenses": "",
+    "org.opencontainers.image.revision": "e938cc9053a8d2d893abb2ac8cdc49cf92dbc75d",
+    "org.opencontainers.image.source": "https://github.com/gpoulios/testpkg",
+    "org.opencontainers.image.title": "testpkg",
+    "org.opencontainers.image.url": "https://github.com/gpoulios/testpkg",
+    "org.opencontainers.image.version": "sha-e938cc9"
+  }
+}
+```
+
+The 2nd manifest is the attestation manifest, which references the in-toto layer:
+
+```json
+$ oras manifest fetch --pretty ${IMAGE}@sha256:5cc9b1839fe53fc7dad25d6f2d638abaf70729359bb48d0fb9dd0f7a78e9409f
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "config": {
+    "mediaType": "application/vnd.oci.image.config.v1+json",
+    "digest": "sha256:34125b0257bbdf32a5746ceca2b6de32451df38c2bc201641732d8862c0a6992",
+    "size": 167
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.in-toto+json",
+      "digest": "sha256:4f9a327ff766e5c8a1f192a671ce1269cf78d498c73dc8e11369ee4b7ecbc48f",
+      "size": 5572,
+      "annotations": {
+        "in-toto.io/predicate-type": "https://slsa.dev/provenance/v0.2"
+      }
+    }
+  ]
+}
+```
+
+Dump the in-toto statement using its sha256:
+
+```json
+$ oras blob fetch --output - ${IMAGE}@sha256:4f9a327ff766e5c8a1f192a671ce1269cf78d498c73dc8e11369ee4b7ecbc48f | jq .
+{
+  "_type": "https://in-toto.io/Statement/v0.1",
+  "predicateType": "https://slsa.dev/provenance/v0.2",
+  "subject": [
+    {
+      "name": "pkg:docker/ghcr.io/gpoulios/testpkg@sha-e938cc9?platform=linux%2Famd64",
+      "digest": {
+        "sha256": "898aa9e520bd7011f9c3b0063693d39915859b3a40dde035753651313a258891"
+      }
+    }
+  ],
+  "predicate": {
+    "builder": {
+      "id": "https://github.com/gpoulios/testpkg/actions/runs/14382811836"
+    },
+    "buildType": "https://mobyproject.org/buildkit@v1",
+    "materials": [
+      {
+        "uri": "pkg:docker/python@alpine3.14?platform=linux%2Famd64",
+        "digest": {
+          "sha256": "fb93ca595ad82020cc52ff60604cddc1a6d393229ef5ecc8f6ac7c7fb52bacda"
+        }
+      }
+    ],
+    "invocation": {
+      "configSource": {
+        "entryPoint": "Dockerfile"
+      },
+      "parameters": {
+        "frontend": "dockerfile.v0",
+        "args": {
+          "label:org.opencontainers.image.created": "2025-04-10T14:18:50.649Z",
+          "label:org.opencontainers.image.description": "",
+          "label:org.opencontainers.image.licenses": "",
+          "label:org.opencontainers.image.revision": "e938cc9053a8d2d893abb2ac8cdc49cf92dbc75d",
+          "label:org.opencontainers.image.source": "https://github.com/gpoulios/testpkg",
+          "label:org.opencontainers.image.title": "testpkg",
+          "label:org.opencontainers.image.url": "https://github.com/gpoulios/testpkg",
+          "label:org.opencontainers.image.version": "sha-e938cc9"
+        },
+        "locals": [
+          {
+            "name": "context"
+          },
+          {
+            "name": "dockerfile"
+          }
+        ]
+      },
+      "environment": {
+        "platform": "linux/amd64"
+      }
+    },
+    "buildConfig": {
+      "llbDefinition": [
+        {
+          "id": "step0",
+          "op": {
+            "Op": {
+              "source": {
+                "identifier": "docker-image://docker.io/library/python:alpine3.14@sha256:fb93ca595ad82020cc52ff60604cddc1a6d393229ef5ecc8f6ac7c7fb52bacda"
+              }
+            },
+            "platform": {
+              "Architecture": "amd64",
+              "OS": "linux"
+            },
+            "constraints": {}
+          }
+        },
+        {
+          "id": "step1",
+          "op": {
+            "Op": {
+              "source": {
+                "identifier": "local://context",
+                "attrs": {
+                  "local.followpaths": "[\"README.md\"]",
+                  "local.sharedkeyhint": "context"
+                }
+              }
+            },
+            "constraints": {}
+          }
+        },
+        {
+          "id": "step2",
+          "op": {
+            "Op": {
+              "file": {
+                "actions": [
+                  {
+                    "input": 0,
+                    "secondaryInput": 1,
+                    "output": 0,
+                    "Action": {
+                      "copy": {
+                        "src": "/README.md",
+                        "dest": "/README.md",
+                        "mode": -1,
+                        "followSymlink": true,
+                        "dirCopyContents": true,
+                        "createDestPath": true,
+                        "allowWildcard": true,
+                        "allowEmptyWildcard": true,
+                        "timestamp": -1
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "constraints": {}
+          },
+          "inputs": [
+            "step0:0",
+            "step1:0"
+          ]
+        },
+        {
+          "id": "step3",
+          "op": {
+            "Op": {}
+          },
+          "inputs": [
+            "step2:0"
+          ]
+        }
+      ],
+      "digestMapping": {
+        "sha256:04791fa18032d49f58bede05a8ca61aea762887a5c4d2536d2e3b9e74ba061cf": "step2",
+        "sha256:34510348aeb0e52c6e2ad801dfa721a6070de58fb1958c99ccfacb6e876e4079": "step3",
+        "sha256:4a83b20505b1605345549177e2fdab92d54cf1198aea85c82be235590b6451a5": "step1",
+        "sha256:de26ac856cfa3a78d41f9afc56cbf99148b029f067c24adfc65a4635fc06f5fa": "step0"
+      }
+    },
+    "metadata": {
+      "buildInvocationID": "q0memssqoxky1qpkko3tt9k0m",
+      "buildStartedOn": "2025-04-10T14:18:58.343923031Z",
+      "buildFinishedOn": "2025-04-10T14:19:00.144312805Z",
+      "completeness": {
+        "parameters": true,
+        "environment": true,
+        "materials": false
+      },
+      "reproducible": false,
+      "https://mobyproject.org/buildkit@v1#metadata": {
+        "vcs": {
+          "localdir:context": ".",
+          "localdir:dockerfile": ".",
+          "revision": "e938cc9053a8d2d893abb2ac8cdc49cf92dbc75d",
+          "source": "https://github.com/gpoulios/testpkg"
+        },
+        "source": {
+          "locations": {
+            "step0": {
+              "locations": [
+                {
+                  "ranges": [
+                    {
+                      "start": {
+                        "line": 1
+                      },
+                      "end": {
+                        "line": 1
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "step1": {},
+            "step2": {
+              "locations": [
+                {
+                  "ranges": [
+                    {
+                      "start": {
+                        "line": 3
+                      },
+                      "end": {
+                        "line": 3
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "infos": [
+            {
+              "filename": "Dockerfile",
+              "language": "Dockerfile",
+              "data": "RlJPTSBweXRob246YWxwaW5lMy4xNAoKQ09QWSBSRUFETUUubWQgL1JFQURNRS5tZA==",
+              "llbDefinition": [
+                {
+                  "id": "step0",
+                  "op": {
+                    "Op": {
+                      "source": {
+                        "identifier": "local://dockerfile",
+                        "attrs": {
+                          "local.differ": "none",
+                          "local.followpaths": "[\"Dockerfile\",\"Dockerfile.dockerignore\",\"dockerfile\"]",
+                          "local.sharedkeyhint": "dockerfile"
+                        }
+                      }
+                    },
+                    "constraints": {}
+                  }
+                },
+                {
+                  "id": "step1",
+                  "op": {
+                    "Op": {}
+                  },
+                  "inputs": [
+                    "step0:0"
+                  ]
+                }
+              ],
+              "digestMapping": {
+                "sha256:26270324bccf3e6bd92b2b19258f233aece87d9b702e9a4b8c6ee88772442f77": "step1",
+                "sha256:92120a28d91c0518bc8f4128594a044ad350fe5e92d4b5c245e4d20c74cf8ef5": "step0"
+              }
+            }
+          ]
+        },
+        "layers": {
+          "step0:0": [
+            [
+              {
+                "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+                "digest": "sha256:8663204ce13b2961da55026a2034abb9e5afaaccf6a9cfb44ad71406dcd07c7b",
+                "size": 2818370
+              },
+[...]
+              {
+                "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+                "digest": "sha256:59657a21942375d7527fd74698336299373dafc8b302ae2613749049e0b0d409",
+                "size": 2871684
+              }
+            ]
+          ],
+          "step2:0": [
+            [
+              {
+                "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+                "digest": "sha256:8663204ce13b2961da55026a2034abb9e5afaaccf6a9cfb44ad71406dcd07c7b",
+                "size": 2818370
+              },
+[...]
+              {
+                "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                "digest": "sha256:329af3d6b5976031130ffb3742b14bd26cdeb52608555fd5de46e77bd28d6eb1",
+                "size": 9092
+              }
+            ]
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+### Inspection - cosign attestation
+
+Image -> Sigstore bundle's manifest -> Sigstore bundle -> {payload, signer cert, signature}
+
+Get the digest of the Sigstore bundle's manifest (in this case `sha256:95c0a84b61[...]`):
+
+```bash
+$ export IMAGE=ghcr.io/gpoulios/testpkg
+$ export IMAGE_DGST=7fe4940f551b5c1c58e815b882024e2eed6b60d2380a3134aa3bcf603f2dc350
+
+$ oras discover ${IMAGE}:sha-e938cc9
+ghcr.io/gpoulios/testpkg@sha256:7fe4940f551b5c1c58e815b882024e2eed6b60d2380a3134aa3bcf603f2dc350
+└── application/vnd.oci.empty.v1+json
+    └── sha256:9524b2c35a48c5c077949425f6a3330fad01863d5d658f351b013888184ed1cc
+
+# equivalent to
+$ oras discover ${IMAGE}@sha256:${IMAGE_DGST}
+ghcr.io/gpoulios/testpkg@sha256:7fe4940f551b5c1c58e815b882024e2eed6b60d2380a3134aa3bcf603f2dc350
+└── application/vnd.oci.empty.v1+json
+    └── sha256:9524b2c35a48c5c077949425f6a3330fad01863d5d658f351b013888184ed1cc
+
+# can be also retrieved directly through the OCI image index
+$ oras manifest fetch --pretty ${IMAGE}:sha256-${IMAGE_DGST}
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.index.v1+json",
+  "manifests": [
+    {
+      "mediaType": "application/vnd.oci.image.manifest.v1+json",
+      "size": 872,
+      "digest": "sha256:9524b2c35a48c5c077949425f6a3330fad01863d5d658f351b013888184ed1cc",
+      "artifactType": "application/vnd.oci.empty.v1+json"
+    }
+  ]
+}
+
+# NOTE: this is different from the image manifest retrievable through:
+# $ oras manifest fetch --pretty ${IMAGE}@sha256:${IMAGE_DGST}
+# (see above: Inspection - docker buildx attestation)
+```
+
+Dump the Sigstore bundle's manifest:
+
+```json
+$ oras manifest fetch --pretty ${IMAGE}@sha256:95c0a84b615b98ed01cb61348889e73a06b28ee54949389bdd6a6144055d9bc6
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",
+  "config": {
+    "mediaType": "application/vnd.oci.empty.v1+json",
+    "size": 2,
+    "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "artifactType": "application/vnd.dev.sigstore.bundle.v0.3+json"
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+      "size": 4553,
+      "digest": "sha256:855097fd1ae34ad3e4101218738589ab56fbf41e455c34fc7f13229bdf470f64"
+    }
+  ],
+  "annotations": {
+    "dev.sigstore.bundle.content": "dsse-envelope",
+    "dev.sigstore.bundle.predicateType": "https://slsa.dev/provenance/v0.2",
+    "org.opencontainers.image.created": "2025-04-10T14:19:09Z"
+  },
+  "subject": {
+    "mediaType": "application/vnd.oci.image.index.v1+json",
+    "size": 856,
+    "digest": "sha256:7fe4940f551b5c1c58e815b882024e2eed6b60d2380a3134aa3bcf603f2dc350"
+  },
+  "artifactType": "application/vnd.dev.sigstore.bundle.v0.3+json"
+}
+```
+
+Get the Sigstore bundle:
+
+```json
+$ export BUNDLE_BLOB="${IMAGE}@sha256:855097fd1ae34ad3e4101218738589ab56fbf41e455c34fc7f13229bdf470f64"
+
+$ oras blob fetch --output - $BUNDLE_BLOB | jq .
+{
+  "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+  "verificationMaterial": {
+    "certificate": {
+      "rawBytes": "MIIB7TCCAZ[...]Nb1by3V8dfg3WQ="
+    }
+  },
+  "dsseEnvelope": {
+    "payload": "eyJfdHlwZSI6Im[...]1dfX0=",
+    "payloadType": "application/vnd.in-toto+json",
+    "signatures": [
+      {
+        "sig": "MEUCIQDdNnoWlqZGM0VReIbwNj/167V4kJjoiOKpj3vncE0MqQIgPmQCD+F6Claj5h6HxWxiZ8va/GKxwaRsqlrja9PQnKA="
+      }
+    ]
+  }
+}
+```
+
+Sigstore bundle payload:
+
+```json
+$ oras blob fetch --output - $BUNDLE_BLOB | \
+  jq -r '.dsseEnvelope.payload' | base64 -d | jq .
+{
+  "_type": "https://in-toto.io/Statement/v0.1",
+  "predicateType": "https://slsa.dev/provenance/v0.2",
+  "subject": [
+    {
+      "name": "ghcr.io/gpoulios/testpkg",
+      "digest": {
+        "sha256": "7fe4940f551b5c1c58e815b882024e2eed6b60d2380a3134aa3bcf603f2dc350"
+      }
+    }
+  ],
+  "predicate": {
+    "builder": {
+      "id": "https://github.com/gpoulios/testpkg/actions/runs/14382811836"
+    },
+    "buildType": "https://mobyproject.org/buildkit@v1",
+    "invocation": {
+      "configSource": {
+        "entryPoint": "Dockerfile"
+      },
+      "parameters": {
+        "args": {
+          "label:org.opencontainers.image.created": "2025-04-10T14:18:50.649Z",
+          "label:org.opencontainers.image.description": "",
+          "label:org.opencontainers.image.licenses": "",
+          "label:org.opencontainers.image.revision": "e938cc9053a8d2d893abb2ac8cdc49cf92dbc75d",
+          "label:org.opencontainers.image.source": "https://github.com/gpoulios/testpkg",
+          "label:org.opencontainers.image.title": "testpkg",
+          "label:org.opencontainers.image.url": "https://github.com/gpoulios/testpkg",
+          "label:org.opencontainers.image.version": "sha-e938cc9"
+        },
+        "frontend": "dockerfile.v0",
+        "locals": [
+          {
+            "name": "context"
+          },
+          {
+            "name": "dockerfile"
+          }
+        ]
+      },
+      "environment": {
+        "platform": "linux/amd64"
+      }
+    },
+    "buildConfig": {
+      "digestMapping": {
+        "sha256:04791fa18032d49f58bede05a8ca61aea762887a5c4d2536d2e3b9e74ba061cf": "step2",
+        "sha256:34510348aeb0e52c6e2ad801dfa721a6070de58fb1958c99ccfacb6e876e4079": "step3",
+        "sha256:4a83b20505b1605345549177e2fdab92d54cf1198aea85c82be235590b6451a5": "step1",
+        "sha256:de26ac856cfa3a78d41f9afc56cbf99148b029f067c24adfc65a4635fc06f5fa": "step0"
+      },
+      "llbDefinition": [
+        {
+          "id": "step0",
+          "op": {
+            "Op": {
+              "source": {
+                "identifier": "docker-image://docker.io/library/python:alpine3.14@sha256:fb93ca595ad82020cc52ff60604cddc1a6d393229ef5ecc8f6ac7c7fb52bacda"
+              }
+            },
+            "constraints": {},
+            "platform": {
+              "Architecture": "amd64",
+              "OS": "linux"
+            }
+          }
+        },
+        {
+          "id": "step1",
+          "op": {
+            "Op": {
+              "source": {
+                "attrs": {
+                  "local.followpaths": "[\"README.md\"]",
+                  "local.sharedkeyhint": "context"
+                },
+                "identifier": "local://context"
+              }
+            },
+            "constraints": {}
+          }
+        },
+        {
+          "id": "step2",
+          "inputs": [
+            "step0:0",
+            "step1:0"
+          ],
+          "op": {
+            "Op": {
+              "file": {
+                "actions": [
+                  {
+                    "Action": {
+                      "copy": {
+                        "allowEmptyWildcard": true,
+                        "allowWildcard": true,
+                        "createDestPath": true,
+                        "dest": "/README.md",
+                        "dirCopyContents": true,
+                        "followSymlink": true,
+                        "mode": -1,
+                        "src": "/README.md",
+                        "timestamp": -1
+                      }
+                    },
+                    "input": 0,
+                    "output": 0,
+                    "secondaryInput": 1
+                  }
+                ]
+              }
+            },
+            "constraints": {}
+          }
+        },
+        {
+          "id": "step3",
+          "inputs": [
+            "step2:0"
+          ],
+          "op": {
+            "Op": {}
+          }
+        }
+      ]
+    },
+    "metadata": {
+      "buildInvocationID": "q0memssqoxky1qpkko3tt9k0m",
+      "buildStartedOn": "2025-04-10T14:18:58.343923031Z",
+      "buildFinishedOn": "2025-04-10T14:19:00.144312805Z",
+      "completeness": {
+        "parameters": true,
+        "environment": true,
+        "materials": false
+      },
+      "reproducible": false
+    },
+    "materials": [
+      {
+        "uri": "pkg:docker/python@alpine3.14?platform=linux%2Famd64",
+        "digest": {
+          "sha256": "fb93ca595ad82020cc52ff60604cddc1a6d393229ef5ecc8f6ac7c7fb52bacda"
+        }
+      }
+    ]
+  }
+}
+```
+
+### Verification
+
+> [!WARNING]
+> Obviously, the recommended way of verifying is through `cosign verify[-blob-attestation]`. The following is just an exercise for better undertanding. DO NOT use in production.
+
+```bash
+$ oras blob fetch --output - $BUNDLE_BLOB | \
+  jq -j '.dsseEnvelope.payloadType' \
+  > payload.type
+
+$ oras blob fetch --output - $BUNDLE_BLOB | \
+  jq -r '.dsseEnvelope.payload' | \
+  base64 -d \
+  > payload.json
+
+$ oras blob fetch --output - $BUNDLE_BLOB | \
+  jq -r '.dsseEnvelope.signatures[0].sig' | \
+  base64 -d \
+  > payload.sig
+
+$ oras blob fetch --output - $BUNDLE_BLOB | \
+  jq -r '.verificationMaterial.certificate.rawBytes' | \
+  base64 -d \
+  > cert.der
+
+$ openssl x509 -pubkey -noout -in cert.der -inform DER > pubkey.pem
+
+$ echo -n "DSSEv1 $(wc -c payload.type | awk '{print $1}') $(cat payload.type) $(wc -c payload.json | awk '{print $1}') $(cat payload.json)" \
+  > payload.pae
+
+$ openssl sha256 -verify pubkey.pem -signature payload.sig payload.pae
+Verified OK
+```
