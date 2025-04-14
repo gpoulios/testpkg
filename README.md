@@ -728,7 +728,7 @@ $ oras blob fetch --output - ${IMAGE}@sha256:63f574b1d103c131d7e8f18b3c78df741e0
 
 Image -> JOSE object's manifest -> JOSE object -> {payload, signer cert, signature}
 
-Get the digest of the JOSE object's manifest (in this case `sha256:0fddd0c45[...]`):
+Get the digest of the JOSE object's manifest (in this case `sha256:879fb0d930[...]`):
 
 ```bash
 $ export IMAGE=ghcr.io/gpoulios/testpkg
@@ -931,15 +931,22 @@ Verified OK
           docker buildx imagetools inspect $image \
             --format "{{json .Provenance.SLSA}}" > provenance.json
 
-          cosign generate-key-pair
+          # generate a dummy key pair and a self-signed CA
+          openssl ecparam -out ecparam.pem -name prime256v1
+          openssl genpkey -paramfile ecparam.pem -out openssl.key
+          openssl req -rand /dev/random -new -days 365 -nodes -x509 \
+            -subj "/C=CC/ST=ST/L=l/O=o/CN=www.example.com" \
+            -key openssl.key -out cosign.cert
+
+          cosign import-key-pair --key openssl.key --output-key-prefix=cosign
 
           cosign attest \
             --tlog-upload=false --new-bundle-format=true \
             --predicate provenance.json --type slsaprovenance02 \
-            --key cosign.key \
+            --key cosign.key --certificate cosign.cert \
             $image
 
-          # cosign sign --key cosign.key $image
+          # cosign sign -y --key cosign.key $image
           # ..is pretty much equivalent except it doesn't upload as OCI artifact
           #   but rather as a new tag attachment with ".sig" extension. The same
           #   provenance data is included in the signed digest but need to be
@@ -1583,7 +1590,7 @@ $ oras blob fetch --output - $BUNDLE_BLOB | \
 ### Verification
 
 > [!WARNING]
-> Obviously, the recommended way of verifying is through `cosign verify[-blob-attestation]`. The following is just an exercise for better undertanding. DO NOT use in production.
+> Obviously, the recommended way of verifying is through `cosign verify[-attestation]`. The following is just an exercise for better undertanding. DO NOT use in production.
 
 ```bash
 $ oras blob fetch --output - $BUNDLE_BLOB | \
@@ -1613,3 +1620,4 @@ $ echo -n "DSSEv1 $(wc -c payload.type | awk '{print $1}') $(cat payload.type) $
 $ openssl sha256 -verify pubkey.pem -signature payload.sig payload.pae
 Verified OK
 ```
+
